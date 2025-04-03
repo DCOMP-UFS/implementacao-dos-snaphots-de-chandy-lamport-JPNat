@@ -1,8 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
-#include <unistd.h>
-#include <time.h>
 #include <mpi.h>
 
 #define BUFFER_SIZE 3
@@ -12,16 +10,27 @@ typedef struct
     int times[BUFFER_SIZE];
 } Clock;
 
+typedef struct
+{
+    int marcador; // representa 1 se for apenas um marcador e 0 se for um relógio
+    int adress; // representa o canal
+    Clock clock;
+} Message;
+
+typedef struct
+{
+    int from;
+    int messages[BUFFER_SIZE];
+} PathState;
+
 Clock *processClock;
 
-Clock clockReceiveQueue[BUFFER_SIZE]; // Primeira fila para chegar na thread relogio
-Clock clockSendQueue[BUFFER_SIZE];    // Fila para sair do relogio
+Message messageReceiveQueue[BUFFER_SIZE]; // Primeira fila para chegar na thread relogio
+Message messageSendQueue[BUFFER_SIZE];    // Fila para sair do relogio
 
-int clockCountReceive = 0;
-int clockCountSend = 0;
+int messageCountReceive = 0;
+int messageCountSend = 0;
 int my_rank;
-
-int source, destination;
 
 pthread_mutex_t receive_mutex, send_mutex;
 
@@ -30,46 +39,73 @@ pthread_cond_t cond_send_full, cond_send_empty;
 
 pthread_cond_t updatedSource, updatedDestination;
 
-void printClock(
+// Variáveis para o snapshot
+int size;
+int snapshotState = 0;
+int countSnapshot = 0;
+
+//
+void printClock
+(
+    char name,
     int who,
-    Clock *showClock);
+    Clock *showClock
+);
 // função responsável por mostrar o relógio
 
-Clock getClock(
-    Clock *queue,
-    int *queueCount);
+Message getMessage
+(
+    Message *queue,
+    int *queueCount
+);
 // função responsável por pegar os valores do relógio na primeira
 //  posição e enfileirar a fila, apagando a primeira posição
 
-void submitClock(
-    Clock clock,
+void submitMessage
+(
+    Message message,
     int *count,
-    Clock *queue);
+    Message *queue
+);
 // Funcao responsável por colocar um relógio em uma das filas
 
-void receiveMPI(
-    int from);
+void receiveMPI
+(
+    int from
+);
+// Função responsável por fazer a recepção da mensagem do MPI
 
-void *receiverFuncion();
+void *receiverFuncion
+();
+// Função que roda a thread receptora
 
-void sendMPI(
-    int to);
+void sendMPI
+(
+    int to
+);
+// Função responsável por fazer o envio da mensagem do MPI
 
-void *senderFunction();
+void *senderFunction
+();
+// Função que roda a thread de envio 
 
-void event();
+void event
+();
 // função que aumenta o valor do relógio a depender do processo
 
-void updateClock();
+void updateClock
+();
+// Função que captura um relógio do buffer de entrada e calcula o novo relógio
 
-void imageClock();
+void imageClock
+();
+// Função que é responsável por passar 
 
-int main(
-    int argc,
-    char *argv[])
+int main( int argc, char *argv[])
 {
     MPI_Init(NULL, NULL);
     MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     pthread_t receiver;
     pthread_t sender;
@@ -95,48 +131,35 @@ int main(
     {
     case 0:
         event();
-        printf("a");
-        printClock(my_rank, processClock);
+        printClock('a' ,my_rank, processClock);
         imageClock();
-        printf("b");
-        printClock(my_rank, processClock);
+        printClock('b', my_rank, processClock);
         updateClock();
-        printf("c");
-        printClock(my_rank, processClock);
+        printClock('c', my_rank, processClock);
         imageClock();
-        printf("d");
-        printClock(my_rank, processClock);
+        printClock('d', my_rank, processClock);
         updateClock();
-        printf("e");
-        printClock(my_rank, processClock);
+        printClock('e', my_rank, processClock);
         imageClock();
-        printf("f");
-        printClock(my_rank, processClock);
+        printClock('f', my_rank, processClock);
         event();
-        printf("g");
-        printClock(my_rank, processClock);
+        printClock('g', my_rank, processClock);
         break;
     case 1:
         imageClock();
-        printf("h");
-        printClock(my_rank, processClock);
+        printClock('h', my_rank, processClock);
         updateClock();
-        printf("i");
-        printClock(my_rank, processClock);
+        printClock('i', my_rank, processClock);
         updateClock();
-        printf("j");
-        printClock(my_rank, processClock);
+        printClock('j', my_rank, processClock);
         break;
     case 2:
         event();
-        printf("k");
-        printClock(my_rank, processClock);
+        printClock('k', my_rank, processClock);
         imageClock();
-        printf("l");
-        printClock(my_rank, processClock);
+        printClock('l', my_rank, processClock);
         updateClock();
-        printf("m");
-        printClock(my_rank, processClock);
+        printClock('m', my_rank, processClock);
         break;
     default:
         break;
@@ -158,18 +181,14 @@ int main(
     return 0;
 } /* main */
 
-void printClock(
-    int who,
-    Clock *showClock)
+void printClock( char name, int who, Clock *showClock)
 {
-    printf("Process: %d, Clock: (%d, %d, %d)\n", who, showClock->times[0], showClock->times[1], showClock->times[2]);
+    printf("%cProcess: %d, Clock: (%d, %d, %d)\n", name, who, showClock->times[0], showClock->times[1], showClock->times[2]);
 }
 
-Clock getClock(
-    Clock *queue,
-    int *queueCount)
+Message getMessage( Message *queue,int *queueCount)
 {
-    Clock clock = queue[0];
+    Message message = queue[0];
     int i;
     for (i = 0; i < *queueCount - 1; i++)
     {
@@ -178,27 +197,24 @@ Clock getClock(
 
     (*queueCount)--;
 
-    return clock;
+    return message;
 }
 
-void submitClock(
-    Clock clock,
-    int *count,
-    Clock *queue)
+void submitMessage( Message message, int *count, Message *queue)
 {
-    queue[*count] = clock;
+    queue[*count] = message;
     (*count)++;
 }
 
 void receiveMPI(int from)
 {
 
-    int message[3];
-    MPI_Recv(message, 3, MPI_INT, from, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    int message[5];
+    MPI_Recv(message, 5, MPI_INT, from, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
     pthread_mutex_lock(&receive_mutex);
 
-    if (clockCountReceive == BUFFER_SIZE)
+    if (messageCountReceive == BUFFER_SIZE)
     {
         pthread_cond_wait(&cond_receive_empty, &send_mutex);
     }
@@ -210,13 +226,19 @@ void receiveMPI(int from)
         newClock.times[i] = message[i];
     }
 
-    submitClock(newClock, &clockCountReceive, clockReceiveQueue);
+    Message recieved = {
+        message[4],
+        message[5],
+        newClock
+    };
+
+    submitMessage(recieved, &messageCountReceive, messageReceiveQueue);
 
     pthread_mutex_unlock(&receive_mutex);
     pthread_cond_signal(&cond_receive_full);
 }
 
-void *receiverFuncion()
+void *receiverFuncion() // Modificar para tratar o algoritmo de snapshot
 {
     switch (my_rank)
     {
@@ -242,16 +264,25 @@ void sendMPI(int to)
 
     pthread_mutex_lock(&send_mutex);
 
-    if (clockCountSend == 0)
+    if (messageCountSend == 0)
     {
         pthread_cond_wait(&cond_send_full, &send_mutex);
     }
 
-    Clock newClock = getClock(clockSendQueue, &clockCountSend);
+    Message newMessage = getMessage(messageSendQueue, &messageCountSend);
     pthread_mutex_unlock(&send_mutex);
     pthread_cond_signal(&cond_send_empty);
 
-    MPI_Send(newClock.times, 3, MPI_INT, to, 0, MPI_COMM_WORLD);
+    int sending[5] = {
+        newMessage.clock.times[0],  
+        newMessage.clock.times[1],  
+        newMessage.clock.times[2],
+        newMessage.marcador,
+        newMessage.adress
+        };
+
+    MPI_Send(sending, 5, MPI_INT, to, 0, MPI_COMM_WORLD);
+
 }
 
 void *senderFunction()
@@ -282,22 +313,20 @@ void event()
 
 void updateClock()
 {
-    processClock->times[my_rank]++;
-
     pthread_mutex_lock(&receive_mutex);
-    if (clockCountReceive == 0)
+    if (messageCountReceive == 0)
     {
         pthread_cond_wait(&cond_receive_full, &receive_mutex);
     }
 
-    Clock newClock = getClock(clockReceiveQueue, &clockCountReceive);
+    Message newMessage = getMessage(messageReceiveQueue, &messageCountReceive);
 
     pthread_mutex_unlock(&receive_mutex);
     pthread_cond_signal(&cond_receive_empty);
 
     for (int i = 0; i < 3; i++)
     {
-        processClock->times[i] = processClock->times[i] < newClock.times[i] ? newClock.times[i] : processClock->times[i];
+        processClock->times[i] = processClock->times[i] < newMessage.clock.times[i] ? newMessage.clock.times[i] : processClock->times[i];
     }
 }
 
@@ -305,15 +334,19 @@ void imageClock()
 {
     processClock->times[my_rank]++;
 
-    Clock newClock = *processClock;
+    Message newMessage = {
+        countSnapshot,
+        my_rank,
+        *processClock
+    };
 
     pthread_mutex_lock(&send_mutex);
-    if (clockCountSend == BUFFER_SIZE)
+    if (messageCountSend == BUFFER_SIZE)
     {
         pthread_cond_wait(&cond_send_empty, &send_mutex);
     }
 
-    submitClock(newClock, &clockCountSend, clockSendQueue);
+    submitMessage(newMessage, &messageCountSend, messageSendQueue);
 
     pthread_mutex_unlock(&send_mutex);
     pthread_cond_signal(&cond_send_full);
